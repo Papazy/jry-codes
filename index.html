@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>fajry — -zsh — 80x24</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+            font-size: 14px;
+            margin: 0;
+            padding: 0;
+            height: 100dvh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* ── Window chrome ── */
+        .window-bar {
+            background: #2d2d2d;
+            padding: 10px 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-bottom: 1px solid #3a3a3a;
+            flex-shrink: 0;
+        }
+        .dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+        .dot-red   { background: #ff5f57; }
+        .dot-yellow{ background: #febc2e; }
+        .dot-green { background: #28c840; }
+        .window-title {
+            flex: 1;
+            text-align: center;
+            color: #888;
+            font-size: 12px;
+            margin-left: -52px; /* visually center despite dots */
+        }
+
+        /* ── Terminal body ── */
+        #terminal {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 16px 20px;
+            overflow: hidden;
+        }
+
+        #terminal-history {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            padding-right: 4px;
+        }
+
+        /* Custom scrollbar */
+        #terminal-history::-webkit-scrollbar { width: 6px; }
+        #terminal-history::-webkit-scrollbar-track { background: transparent; }
+        #terminal-history::-webkit-scrollbar-thumb {
+            background: #444;
+            border-radius: 3px;
+        }
+        #terminal-history::-webkit-scrollbar-thumb:hover { background: #666; }
+
+        .output-block {
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        /* ── Input row ── */
+        .input-wrapper {
+            display: flex;
+            align-items: center;
+            margin-top: 8px;
+            flex-shrink: 0;
+        }
+
+        /* Hidden real input sits over the fake cursor line */
+        #cmd-input {
+            position: absolute;
+            opacity: 0;
+            pointer-events: none;
+            width: 1px;
+            height: 1px;
+        }
+        /* ── Color tokens ── */
+        .c-green  { color: #4ec94e; font-weight: 700; }
+        .c-cyan   { color: #56b6c2; }
+        .c-blue   { color: #569cd6; }
+        .c-yellow { color: #e5c07b; }
+        .c-red    { color: #f44747; }
+        .c-dim    { color: #6a6a6a; }
+        .c-white  { color: #d4d4d4; }
+
+        /* ── Prompt ── */
+        .prompt-user { color: #4ec94e; font-weight: 700; }
+        .prompt-sep  { color: #888; }
+        .prompt-path { color: #56b6c2; }
+        .prompt-char { color: #d4d4d4; }
+
+        /* ── Fake input line with blinking cursor ── */
+        #display-line {
+            display: flex;
+            align-items: center;
+            flex: 1;
+            overflow: hidden;
+        }
+        #display-text {
+            white-space: pre;
+            color: #d4d4d4;
+        }
+        #cursor {
+            display: inline-block;
+            width: 0.6em;
+            height: 1.15em;
+            background: #d4d4d4;
+            margin-left: 1px;
+            vertical-align: text-bottom;
+            animation: blink 1s step-end infinite;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50%       { opacity: 0; }
+        }
+
+        /* ── Output links ── */
+        a {
+            color: #56b6c2;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
+        a:hover { color: #80d4de; }
+
+        /* ── Misc ── */
+        .mb4 { margin-bottom: 4px; }
+    </style>
+</head>
+<body>
+
+    <!-- macOS-style title bar -->
+    <div class="window-bar">
+        <span class="dot dot-red"></span>
+        <span class="dot dot-yellow"></span>
+        <span class="dot dot-green"></span>
+        <span class="window-title">fajry@macbook: ~</span>
+    </div>
+
+    <!-- Terminal body -->
+    <div id="terminal">
+        <div id="terminal-history"></div>
+
+        <!-- Current input row -->
+        <div class="input-wrapper">
+            <span class="prompt-user">fajry</span><span class="prompt-sep">@</span><span class="prompt-user">macbook</span><span class="prompt-sep">:</span><span class="prompt-path">~</span><span class="prompt-char">$ </span>
+            <div id="display-line">
+                <span id="display-text"></span><span id="cursor"></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden real input for keyboard capture -->
+    <input type="text" id="cmd-input" autocomplete="off" spellcheck="false" aria-hidden="true">
+
+    <script>
+    (() => {
+        'use strict';
+
+        const input      = document.getElementById('cmd-input');
+        const history    = document.getElementById('terminal-history');
+        const displayTxt = document.getElementById('display-text');
+        const cursor     = document.getElementById('cursor');
+
+        // ── State ──────────────────────────────────────────────
+        let cmdHistory  = [];   // submitted commands
+        let historyIdx  = -1;   // -1 = current
+        let savedDraft  = '';   // saves current draft while browsing history
+
+        // ── Boot message ───────────────────────────────────────
+        const now = new Date();
+        const loginTime = now.toDateString() + ' ' + now.toLocaleTimeString();
+        appendRaw(`<span class="c-dim">Last login: ${loginTime} on ttys001</span>`);
+        appendRaw(`<span class="c-white">Welcome to <span class="c-green">fajry</span>'s terminal portfolio.</span>`);
+        appendRaw(`<span class="c-dim">Type <span class="c-yellow">help</span> to see available commands.</span>\n`);
+
+        // ── Command definitions ────────────────────────────────
+        const COMMANDS = {
+            help() {
+                return `<span class="c-yellow">Available commands:</span>
+
+  <span class="c-cyan">about</span>       Who am I?
+  <span class="c-cyan">projects</span>    Featured projects
+  <span class="c-cyan">skills</span>      Tech stack & tools
+  <span class="c-cyan">contact</span>     Links & contact info
+  <span class="c-cyan">clear</span>       Clear the terminal
+  <span class="c-cyan">help</span>        Show this message`;
+            },
+
+            about() {
+                return `<span class="c-green">▸ About Me</span>
+
+Hi! I'm <span class="c-yellow">Fajry</span>, a Software Engineer with a strong interest in
+<span class="c-cyan">AI Engineering</span>, web development, and creating efficient systems.
+Currently working remotely from <span class="c-cyan">Banda Aceh</span>.`;
+            },
+
+            projects() {
+                return `<span class="c-green">▸ Featured Projects</span>
+
+<span class="c-yellow"> 1.</span> <span class="c-cyan">Prisma/SQL → Chen ERD Generator</span>
+    A tool for mapping database schemas (Prisma / raw SQL) into
+    Chen-notation Entity Relationship Diagrams automatically.
+
+<span class="c-yellow"> 2.</span> <span class="c-cyan">AI Telegram Bot</span>
+    Conversational bot integrated with the Gemini API — context-
+    aware responses, image understanding, and command handling.
+
+<span class="c-yellow"> 3.</span> <span class="c-cyan">Auto Code-Judging System</span>
+    Dockerized automated evaluation system for competitive
+    programming assignments; supports multiple languages.`;
+            },
+
+            skills() {
+                return `<span class="c-green">▸ Tech Stack</span>
+
+<span class="c-yellow">Frontend</span>    Next.js · React · React Native · Expo · Tailwind CSS
+<span class="c-yellow">Backend</span>     Node.js · PHP · Laravel · REST · WebSocket
+<span class="c-yellow">AI / ML</span>     Gemini API · LangChain · Prompt Engineering
+<span class="c-yellow">DevOps</span>      Docker · GitHub Actions · Linux · Nginx
+<span class="c-yellow">Databases</span>   PostgreSQL · MySQL · Prisma ORM · Redis
+<span class="c-yellow">Tools</span>       Git · VSCode · Postman · Figma`;
+            },
+
+            contact() {
+                return `<span class="c-green">▸ Get in Touch</span>
+
+<span class="c-yellow">GitHub</span>    <a href="https://github.com/fajryariansyah" target="_blank" rel="noopener noreferrer">github.com/fajryariansyah</a>
+<span class="c-yellow">LinkedIn</span>  <a href="https://linkedin.com/in/fajryariansyah" target="_blank" rel="noopener noreferrer">linkedin.com/in/fajryariansyah</a>
+<span class="c-yellow">Email</span>     <a href="mailto:fajry@example.com">fajry@example.com</a>`;
+            },
+        };
+
+        // ── Helpers ────────────────────────────────────────────
+        function promptHTML() {
+            return `<span class="prompt-user">fajry</span><span class="prompt-sep">@</span><span class="prompt-user">macbook</span><span class="prompt-sep">:</span><span class="prompt-path">~</span><span class="prompt-char">$ </span>`;
+        }
+
+        function appendRaw(html) {
+            const div = document.createElement('div');
+            div.className = 'output-block';
+            div.innerHTML = html;
+            history.appendChild(div);
+            scrollBottom();
+        }
+
+        function scrollBottom() {
+            history.scrollTop = history.scrollHeight;
+        }
+
+        // Escape user-typed text before embedding in HTML
+        function escapeHTML(str) {
+            return str
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+        }
+
+        // ── Execute command ────────────────────────────────────
+        function runCommand(raw) {
+            const cmd = raw.trim().toLowerCase();
+
+            // Echo the prompt + typed command
+            appendRaw(`${promptHTML()}<span class="c-white">${escapeHTML(raw.trim())}</span>`);
+
+            if (!cmd) return;
+
+            if (cmd === 'clear') {
+                history.innerHTML = '';
+                return;
+            }
+
+            if (COMMANDS[cmd]) {
+                appendRaw(COMMANDS[cmd]());
+            } else {
+                appendRaw(`<span class="c-red">zsh: command not found: ${escapeHTML(cmd)}</span>`);
+            }
+        }
+
+        // ── Sync fake display with real input ─────────────────
+        function syncDisplay() {
+            displayTxt.textContent = input.value;
+        }
+
+        // ── Keep input focused ─────────────────────────────────
+        function focusInput() { input.focus(); }
+
+        document.addEventListener('click', (e) => {
+            // Don't steal focus if user is selecting text
+            if (window.getSelection().toString()) return;
+            focusInput();
+        });
+
+        // ── Keyboard handling ──────────────────────────────────
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                const val = input.value;
+                if (val.trim()) {
+                    cmdHistory.unshift(val);   // newest at front
+                }
+                historyIdx = -1;
+                savedDraft = '';
+                input.value = '';
+                syncDisplay();
+                runCommand(val);
+                return;
+            }
+
+            if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (cmdHistory.length === 0) return;
+                if (historyIdx === -1) savedDraft = input.value;
+                historyIdx = Math.min(historyIdx + 1, cmdHistory.length - 1);
+                input.value = cmdHistory[historyIdx];
+                syncDisplay();
+                return;
+            }
+
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (historyIdx === -1) return;
+                historyIdx--;
+                input.value = historyIdx === -1 ? savedDraft : cmdHistory[historyIdx];
+                syncDisplay();
+                return;
+            }
+        });
+
+        input.addEventListener('input', syncDisplay);
+
+        // ── Initial focus ──────────────────────────────────────
+        focusInput();
+    })();
+    </script>
+
+</body>
+</html>
